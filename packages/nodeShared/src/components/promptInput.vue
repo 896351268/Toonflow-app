@@ -9,7 +9,7 @@
     <div ref="expandedTarget" class="promptExpandedTarget nodrag nopan nowheel" @pointerdown.stop @mousedown.stop @dblclick.stop />
   </el-dialog>
   <el-image-viewer v-if="previewUrl" :urlList="[previewUrl]" teleported @close="previewReferenceId = undefined" />
-  <teleport :to="expanded && expandedTarget ? expandedTarget : 'body'">
+  <teleport :to="mentionTarget || 'body'">
     <promptReferenceMenu
       v-if="mentionVisible"
       ref="mentionMenu"
@@ -53,6 +53,7 @@ const expanded = ref(false);
 const expandedTarget = ref<HTMLElement>();
 const { nextZIndex } = useZIndex();
 const mentionMenu = ref<InstanceType<typeof promptReferenceMenu>>();
+const mentionTarget = ref<HTMLElement>();
 const mentionVisible = ref(false);
 const mentionQuery = ref("");
 const mentionAnchor = ref({ left: 0, top: 0, bottom: 0 });
@@ -98,6 +99,7 @@ function updateMentionMenu() {
   const rect = range.getClientRects()[0] ?? editor.getBoundingClientRect();
   mentionAnchor.value = { left: rect.left, top: rect.top, bottom: rect.bottom };
   mentionQuery.value = before.slice(start + 1);
+  mentionTarget.value = expanded.value && expandedTarget.value ? expandedTarget.value : editor.closest<HTMLElement>(".el-dialog") ?? document.body;
   if (!mentionVisible.value) mentionZIndex.value = nextZIndex();
   mentionVisible.value = true;
 }
