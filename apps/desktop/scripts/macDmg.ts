@@ -23,6 +23,28 @@ async function run(command: string[], input?: string) {
   if (await child.exited !== 0) throw new Error(`macOS 安装镜像制作失败：${command[0]} ${command[1]}`);
 }
 
+async function detachDmg(mountPath: string, device = statSync(mountPath).dev) {
+  const parentDevice = statSync("/Volumes").dev;
+  // ACT: Finder 关闭后仍可能短暂占用文件；仅重试本次镜像的 busy 错误，间隔合计 10 秒，每次卸载最多 30 秒。
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    if (!existsSync(mountPath)) return;
+    const currentDevice = statSync(mountPath).dev;
+    if (currentDevice === parentDevice) return;
+    if (currentDevice !== device) throw new Error(`安装镜像挂载设备已变化，拒绝卸载：${mountPath}`);
+    const child = Bun.spawn(["/usr/bin/hdiutil", "detach", mountPath], {
+      env: { ...process.env, LC_ALL: "C" }, stdin: "ignore", stdout: "inherit", stderr: "pipe", timeout: 30000,
+    });
+    const [exitCode, message] = await Promise.all([child.exited, new Response(child.stderr).text()]);
+    process.stderr.write(message);
+    if (exitCode === 0) return;
+    if (!message.includes("Resource busy") || attempt === 5) {
+      throw new Error(`macOS 安装镜像卸载失败（退出码 ${exitCode}）：${mountPath}`);
+    }
+    console.warn(`安装镜像仍被占用，${attempt} 秒后重试卸载（${attempt}/4）：${mountPath}`);
+    await Bun.sleep(attempt * 1000);
+  }
+}
+
 async function createDmg(args: string[]) {
   const sourceIndex = args.indexOf("-srcfolder");
   if (args[0] !== "create" || sourceIndex < 0) {
@@ -80,6 +102,7 @@ function run(args) {
 
   const temporary = mkdtempSync(join(tmpdir(), "toonflowDmg"));
   const imagePath = join(temporary, "install.dmg");
+  let mountedDevice: number | undefined;
   try {
     const createArgs = [...args];
     createArgs[formatIndex + 1] = "UDRW";
@@ -87,6 +110,7 @@ function run(args) {
     createArgs.splice(1, 0, "-fs", "HFS+");
     await run(["/usr/bin/hdiutil", ...createArgs]);
     await run(["/usr/bin/hdiutil", "attach", imagePath, "-readwrite", "-nobrowse", "-mountpoint", mountPath]);
+    mountedDevice = statSync(mountPath).dev;
     await run(["/usr/bin/osascript", "-", mountPath, apps[0]!], `
 on run args
   set volumeFolder to POSIX file (item 1 of args) as alias
@@ -110,17 +134,18 @@ on run args
       update without registering applications
       delay 2
       close
+      delay 1
     end tell
   end tell
 end run
 `);
     if (!existsSync(join(mountPath, ".DS_Store"))) throw new Error("Finder 未保存 macOS 安装引导布局。");
-    await run(["/usr/bin/hdiutil", "detach", mountPath]);
+    await detachDmg(mountPath, mountedDevice);
     await run(["/usr/bin/hdiutil", "convert", imagePath, "-format", args[formatIndex + 1]!, "-o", output, "-ov"]);
     console.log(`已添加拖拽安装引导：${basename(output)}`);
   } finally {
     if (existsSync(mountPath) && statSync(mountPath).dev !== statSync("/Volumes").dev) {
-      try { await run(["/usr/bin/hdiutil", "detach", mountPath]); }
+      try { await detachDmg(mountPath, mountedDevice); }
       catch (error) { throw new Error(`安装镜像未能卸载，已保留临时目录：${temporary}`, { cause: error }); }
     }
     rmSync(temporary, { recursive: true, force: true });
